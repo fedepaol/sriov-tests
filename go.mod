@@ -3,14 +3,22 @@ module github.com/openshift/sriov-tests
 go 1.13
 
 require (
+	github.com/ajeddeloh/go-json v0.0.0-20170920214419-6a2fe990e083 // indirect
+	github.com/coreos/ignition v0.35.0 // indirect
+	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b
 	github.com/intel/sriov-network-device-plugin v3.0.1-0.20191017093954-bf28fdc3e2d9+incompatible
-	github.com/onsi/ginkgo v1.10.3
+	github.com/onsi/ginkgo v1.12.0
 	github.com/onsi/gomega v1.7.1
+	github.com/openshift-kni/cnf-features-deploy v0.0.0-20200213214615-d74cd80c2c0d
+	github.com/openshift/client-go v0.0.0-20191205152420-9faca5198b4f
+	github.com/openshift/machine-config-operator v4.2.0-alpha.0.0.20190917115525-033375cbe820+incompatible
 	github.com/openshift/sriov-network-operator v0.0.0-20200201042246-2f3f3ce1e6eb
 	github.com/operator-framework/operator-sdk v0.12.1-0.20191112211508-82fc57de5e5b
-	k8s.io/api v0.0.0
-	k8s.io/apimachinery v0.0.0
+	go.etcd.io/etcd v3.3.18+incompatible
+	k8s.io/api v0.17.0
+	k8s.io/apimachinery v0.17.0
 	k8s.io/client-go v11.0.1-0.20190409021438-1a26190bd76a+incompatible
+	k8s.io/utils v0.0.0-20200109141947-94aeca20bf09
 	sigs.k8s.io/controller-runtime v0.3.0
 )
 
