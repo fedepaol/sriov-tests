@@ -25,9 +25,10 @@ func DiscoverSriov(clients *testclient.ClientSet, operatorNamespace string) (*En
 	}
 
 	for _, state := range nodeStates.Items {
-		if state.Status.SyncStatus != "Succeeded" {
+		if !stateStable(state) {
 			return nil, fmt.Errorf("Sync status still in progress")
 		}
+
 		node := state.Name
 		for _, itf := range state.Status.Interfaces {
 			if itf.TotalVfs > 0 {
@@ -57,4 +58,31 @@ func (n *EnabledNodes) FindOneSriovDevice(node string) (*sriovv1.InterfaceExt, e
 	}
 
 	return nil, fmt.Errorf("Unable to find sriov devices in node %s", node)
+}
+
+// SriovStable tells if all the node states are in sync (and the cluster is ready for another round of tests)
+func SriovStable(operatorNamespace string, clients *testclient.ClientSet) (bool, error) {
+	nodeStates, err := clients.SriovNetworkNodeStates(operatorNamespace).List(metav1.ListOptions{})
+	if err != nil {
+		return false, fmt.Errorf("Failed to fetch nodes state %v", err)
+	}
+	if len(nodeStates.Items) == 0 {
+		return false, nil
+	}
+	for _, state := range nodeStates.Items {
+		if !stateStable(state) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func stateStable(state sriovv1.SriovNetworkNodeState) bool {
+	switch state.Status.SyncStatus {
+	case "Succeeded":
+		return true
+	case "":
+		return true
+	}
+	return false
 }

@@ -6,6 +6,7 @@ import (
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	. "github.com/onsi/gomega/gstruct"
 
 	sriovv1 "github.com/openshift/sriov-network-operator/pkg/apis/sriovnetwork/v1"
 	"github.com/openshift/sriov-tests/pkg/util/cluster"
@@ -16,19 +17,24 @@ import (
 )
 
 var _ = Describe("operator", func() {
-	// var sriovInfos *sriovEnabledNodes
+	var sriovInfos *cluster.EnabledNodes
 	execute.BeforeAll(func() {
 		err := namespaces.Create(namespaces.Test, clients)
 		Expect(err).ToNot(HaveOccurred())
 
-		err = namespaces.Clean(namespaces.Test, clients)
-		Expect(err).ToNot(HaveOccurred())
-
-		// This also validates that sriov is properly configured, ignoring the configuration ATM
-		_, err = cluster.DiscoverSriov(clients, operatorNamespace)
+		sriovInfos, err = cluster.DiscoverSriov(clients, operatorNamespace)
 		Expect(err).ToNot(HaveOccurred())
 	})
 
+	BeforeEach(func() {
+		err := namespaces.Clean(operatorNamespace, namespaces.Test, clients)
+		Expect(err).ToNot(HaveOccurred())
+		Eventually(func() bool {
+			res, err := cluster.SriovStable(operatorNamespace, clients)
+			Expect(err).ToNot(HaveOccurred())
+			return res
+		}, 3*time.Minute, 1*time.Second).Should(Equal(true))
+	})
 	var _ = Describe("Configuration", func() {
 
 		Context("SR-IOV network config daemon can be set by nodeselector", func() {
@@ -83,6 +89,115 @@ var _ = Describe("operator", func() {
 					return daemonsScheduledOnNodes("node-role.kubernetes.io/worker")
 				}, 1*time.Minute, 1*time.Second).Should(Equal(true))
 
+			})
+		})
+
+		Context("PF Partitioning", func() {
+			It("Should be possible to partition the pf's vfs", func() {
+				node := sriovInfos.Nodes[0]
+				intf, err := sriovInfos.FindOneSriovDevice(node)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(intf.TotalVfs).To(BeNumerically(">", 7))
+
+				firstConfig := &sriovv1.SriovNetworkNodePolicy{
+					ObjectMeta: metav1.ObjectMeta{
+						GenerateName: "testpolicy",
+						Namespace:    operatorNamespace,
+					},
+
+					Spec: sriovv1.SriovNetworkNodePolicySpec{
+						NodeSelector: map[string]string{
+							"kubernetes.io/hostname": node,
+						},
+						NumVfs:       5,
+						ResourceName: "testresource",
+						Priority:     99,
+						NicSelector: sriovv1.SriovNetworkNicSelector{
+							PfNames: []string{intf.Name + "#2-4"},
+						},
+						DeviceType: "netdevice",
+					},
+				}
+
+				err = clients.Create(context.Background(), firstConfig)
+				Expect(err).ToNot(HaveOccurred())
+
+				Eventually(func() sriovv1.Interfaces {
+					nodeState, err := clients.SriovNetworkNodeStates(operatorNamespace).Get(node, metav1.GetOptions{})
+					Expect(err).ToNot(HaveOccurred())
+					return nodeState.Spec.Interfaces
+				}, 1*time.Minute, 1*time.Second).Should(ContainElement(MatchFields(
+					IgnoreExtras,
+					Fields{
+						"Name":     Equal(intf.Name),
+						"NumVfs":   Equal(5),
+						"VfGroups": ContainElement(sriovv1.VfGroup{ResourceName: "testresource", DeviceType: "netdevice", VfRange: "2-4"}),
+					})))
+
+				Eventually(func() int64 {
+					testedNode, err := clients.Nodes().Get(node, metav1.GetOptions{})
+					Expect(err).ToNot(HaveOccurred())
+					resNum, _ := testedNode.Status.Capacity["openshift.io/testresource"]
+					capacity, _ := resNum.AsInt64()
+					return capacity
+				}, 3*time.Minute, time.Second).Should(Equal(int64(3)))
+
+				secondConfig := &sriovv1.SriovNetworkNodePolicy{
+					ObjectMeta: metav1.ObjectMeta{
+						GenerateName: "testpolicy",
+						Namespace:    operatorNamespace,
+					},
+
+					Spec: sriovv1.SriovNetworkNodePolicySpec{
+						NodeSelector: map[string]string{
+							"kubernetes.io/hostname": node,
+						},
+						NumVfs:       5,
+						ResourceName: "testresource1",
+						Priority:     99,
+						NicSelector: sriovv1.SriovNetworkNicSelector{
+							PfNames: []string{intf.Name + "#0-1"},
+						},
+						DeviceType: "vfio-pci",
+					},
+				}
+
+				err = clients.Create(context.Background(), secondConfig)
+				Expect(err).ToNot(HaveOccurred())
+
+				Eventually(func() sriovv1.Interfaces {
+					nodeState, err := clients.SriovNetworkNodeStates(operatorNamespace).Get(node, metav1.GetOptions{})
+					Expect(err).ToNot(HaveOccurred())
+					return nodeState.Spec.Interfaces
+				}, 3*time.Minute, 1*time.Second).Should(ContainElement(MatchFields(
+					IgnoreExtras,
+					Fields{
+						"Name":   Equal(intf.Name),
+						"NumVfs": Equal(5),
+						"VfGroups": SatisfyAll(
+							ContainElement(
+								sriovv1.VfGroup{ResourceName: "testresource", DeviceType: "netdevice", VfRange: "2-4"}),
+							ContainElement(
+								sriovv1.VfGroup{ResourceName: "testresource1", DeviceType: "vfio-pci", VfRange: "0-1"}),
+						),
+					},
+				)))
+
+				Eventually(func() map[string]int64 {
+					testedNode, err := clients.Nodes().Get(node, metav1.GetOptions{})
+					Expect(err).ToNot(HaveOccurred())
+					resNum, _ := testedNode.Status.Capacity["openshift.io/testresource"]
+					capacity, _ := resNum.AsInt64()
+					res := make(map[string]int64)
+					res["openshift.io/testresource"] = capacity
+					resNum, _ = testedNode.Status.Capacity["openshift.io/testresource1"]
+					capacity, _ = resNum.AsInt64()
+					res["openshift.io/testresource1"] = capacity
+					return res
+				}, time.Minute, time.Second).Should(Equal(map[string]int64{
+					"openshift.io/testresource":  int64(3),
+					"openshift.io/testresource1": int64(2),
+				}))
 			})
 		})
 	})

@@ -1,14 +1,18 @@
 package namespaces
 
 import (
+	"context"
+	"fmt"
 	"time"
 
+	sriovv1 "github.com/openshift/sriov-network-operator/pkg/apis/sriovnetwork/v1"
 	k8sv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/utils/pointer"
+	runtimeclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	testclient "github.com/openshift/sriov-tests/pkg/util/client"
 )
@@ -42,7 +46,7 @@ func Create(namespace string, cs *testclient.ClientSet) error {
 }
 
 // Clean cleans all dangling objects from the given namespace.
-func Clean(namespace string, cs *testclient.ClientSet) error {
+func Clean(operatorNamespace, namespace string, cs *testclient.ClientSet) error {
 	_, err := cs.Namespaces().Get(namespace, metav1.GetOptions{})
 	if err != nil && k8serrors.IsNotFound(err) {
 		return nil
@@ -51,5 +55,26 @@ func Clean(namespace string, cs *testclient.ClientSet) error {
 	err = cs.Pods(namespace).DeleteCollection(&metav1.DeleteOptions{
 		GracePeriodSeconds: pointer.Int64Ptr(0),
 	}, metav1.ListOptions{})
-	return err
+	if err != nil {
+		return fmt.Errorf("Failed to delete pods %v", err)
+	}
+
+	policies := sriovv1.SriovNetworkNodePolicyList{}
+	err = cs.List(context.Background(),
+		&policies,
+		runtimeclient.InNamespace(operatorNamespace))
+
+	if err != nil {
+		return err
+	}
+
+	for _, p := range policies.Items {
+		if p.Name != "default" {
+			err := cs.Delete(context.Background(), &p)
+			if err != nil {
+				return fmt.Errorf("Failed to delete policies %v", err)
+			}
+		}
+	}
+	return nil
 }
