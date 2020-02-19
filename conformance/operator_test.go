@@ -97,7 +97,6 @@ var _ = Describe("operator", func() {
 				node := sriovInfos.Nodes[0]
 				intf, err := sriovInfos.FindOneSriovDevice(node)
 				Expect(err).ToNot(HaveOccurred())
-				Expect(intf.TotalVfs).To(BeNumerically(">", 7))
 
 				firstConfig := &sriovv1.SriovNetworkNodePolicy{
 					ObjectMeta: metav1.ObjectMeta{
@@ -198,6 +197,72 @@ var _ = Describe("operator", func() {
 					"openshift.io/testresource":  int64(3),
 					"openshift.io/testresource1": int64(2),
 				}))
+			})
+			It("Should not be possible to have overlapping pf ranges", func() {
+				// Skipping this test as blocking the override will
+				// be implemented in 4.5, as per bz #1798880
+				Skip("Overlapping is still not blocked")
+				node := sriovInfos.Nodes[0]
+				intf, err := sriovInfos.FindOneSriovDevice(node)
+				Expect(err).ToNot(HaveOccurred())
+
+				firstConfig := &sriovv1.SriovNetworkNodePolicy{
+					ObjectMeta: metav1.ObjectMeta{
+						GenerateName: "testpolicy",
+						Namespace:    operatorNamespace,
+					},
+
+					Spec: sriovv1.SriovNetworkNodePolicySpec{
+						NodeSelector: map[string]string{
+							"kubernetes.io/hostname": node,
+						},
+						NumVfs:       5,
+						ResourceName: "testresource",
+						Priority:     99,
+						NicSelector: sriovv1.SriovNetworkNicSelector{
+							PfNames: []string{intf.Name + "#1-4"},
+						},
+						DeviceType: "netdevice",
+					},
+				}
+
+				err = clients.Create(context.Background(), firstConfig)
+				Expect(err).ToNot(HaveOccurred())
+
+				Eventually(func() sriovv1.Interfaces {
+					nodeState, err := clients.SriovNetworkNodeStates(operatorNamespace).Get(node, metav1.GetOptions{})
+					Expect(err).ToNot(HaveOccurred())
+					return nodeState.Spec.Interfaces
+				}, 1*time.Minute, 1*time.Second).Should(ContainElement(MatchFields(
+					IgnoreExtras,
+					Fields{
+						"Name":     Equal(intf.Name),
+						"NumVfs":   Equal(5),
+						"VfGroups": ContainElement(sriovv1.VfGroup{ResourceName: "testresource", DeviceType: "netdevice", VfRange: "1-4"}),
+					})))
+
+				secondConfig := &sriovv1.SriovNetworkNodePolicy{
+					ObjectMeta: metav1.ObjectMeta{
+						GenerateName: "testpolicy",
+						Namespace:    operatorNamespace,
+					},
+
+					Spec: sriovv1.SriovNetworkNodePolicySpec{
+						NodeSelector: map[string]string{
+							"kubernetes.io/hostname": node,
+						},
+						NumVfs:       5,
+						ResourceName: "testresource1",
+						Priority:     99,
+						NicSelector: sriovv1.SriovNetworkNicSelector{
+							PfNames: []string{intf.Name + "#0-2"},
+						},
+						DeviceType: "vfio-pci",
+					},
+				}
+
+				err = clients.Create(context.Background(), secondConfig)
+				Expect(err).To(HaveOccurred())
 			})
 		})
 	})
