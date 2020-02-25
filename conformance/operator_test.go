@@ -38,6 +38,7 @@ var _ = Describe("operator", func() {
 	var _ = Describe("Configuration", func() {
 
 		Context("SR-IOV network config daemon can be set by nodeselector", func() {
+			// 26186
 			It("Should schedule the config daemon on selected nodes", func() {
 
 				By("Checking that a daemon is scheduled on each worker node")
@@ -93,6 +94,7 @@ var _ = Describe("operator", func() {
 		})
 
 		Context("PF Partitioning", func() {
+			// 27633
 			It("Should be possible to partition the pf's vfs", func() {
 				node := sriovInfos.Nodes[0]
 				intf, err := sriovInfos.FindOneSriovDevice(node)
@@ -198,6 +200,8 @@ var _ = Describe("operator", func() {
 					"openshift.io/testresource1": int64(2),
 				}))
 			})
+
+			// 27630
 			It("Should not be possible to have overlapping pf ranges", func() {
 				// Skipping this test as blocking the override will
 				// be implemented in 4.5, as per bz #1798880
