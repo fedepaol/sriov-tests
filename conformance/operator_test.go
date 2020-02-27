@@ -15,6 +15,7 @@ import (
 	"github.com/openshift/sriov-tests/pkg/util/cluster"
 	"github.com/openshift/sriov-tests/pkg/util/execute"
 	"github.com/openshift/sriov-tests/pkg/util/namespaces"
+	"github.com/openshift/sriov-tests/pkg/util/network"
 	"github.com/openshift/sriov-tests/pkg/util/pod"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -701,6 +702,100 @@ var _ = Describe("operator", func() {
 					})))
 			})
 		})
+		Context("MTU", func() {
+			var mtuNetwork *sriovv1.SriovNetwork
+
+			BeforeEach(func() {
+				node := sriovInfos.Nodes[0]
+				intf, err := sriovInfos.FindOneSriovDevice(node)
+				Expect(err).ToNot(HaveOccurred())
+
+				mtuPolicy := &sriovv1.SriovNetworkNodePolicy{
+					ObjectMeta: metav1.ObjectMeta{
+						GenerateName: "mtupolicy",
+						Namespace:    operatorNamespace,
+					},
+
+					Spec: sriovv1.SriovNetworkNodePolicySpec{
+						NodeSelector: map[string]string{
+							"kubernetes.io/hostname": node,
+						},
+						Mtu:          9000,
+						NumVfs:       5,
+						ResourceName: "mturesource",
+						Priority:     99,
+						NicSelector: sriovv1.SriovNetworkNicSelector{
+							PfNames: []string{intf.Name},
+						},
+						DeviceType: "netdevice",
+					},
+				}
+
+				err = clients.Create(context.Background(), mtuPolicy)
+				Expect(err).ToNot(HaveOccurred())
+
+				Eventually(func() bool {
+					stable, err := cluster.SriovStable(operatorNamespace, clients)
+					Expect(err).ToNot(HaveOccurred())
+					return stable
+				}, 2*time.Minute, 1*time.Second).Should(Equal(false))
+
+				Eventually(func() bool {
+					stable, err := cluster.SriovStable(operatorNamespace, clients)
+					Expect(err).ToNot(HaveOccurred())
+					return stable
+				}, 10*time.Minute, 1*time.Second).Should(Equal(true))
+
+				err = network.CreateSriovNetwork(clients,
+					"mtuvolnetwork",
+					namespaces.Test,
+					operatorNamespace,
+					"mturesource",
+					`{"type":"host-local","subnet":"10.10.10.0/24","rangeStart":"10.10.10.171","rangeEnd":"10.10.10.181","routes":[{"dst":"0.0.0.0/0"}],"gateway":"10.10.10.1"}`)
+
+				Expect(err).ToNot(HaveOccurred())
+
+				Eventually(func() error {
+					netAttDef := &netattdefv1.NetworkAttachmentDefinition{}
+					return clients.Get(context.Background(), runtimeclient.ObjectKey{Name: mtuNetwork.Name, Namespace: namespaces.Test}, netAttDef)
+				}, 10*time.Second, 1*time.Second).ShouldNot(HaveOccurred())
+
+			})
+
+			// 27662
+			It("Should support jumbo frames", func() {
+				podDefinition := pod.DefineWithNetworks([]string{mtuNetwork.Name})
+				firstPod, err := clients.Pods(namespaces.Test).Create(podDefinition)
+				Expect(err).ToNot(HaveOccurred())
+
+				Eventually(func() corev1.PodPhase {
+					firstPod, _ = clients.Pods(namespaces.Test).Get(firstPod.Name, metav1.GetOptions{})
+					return firstPod.Status.Phase
+				}, 3*time.Minute, time.Second).Should(Equal(corev1.PodRunning))
+
+				stdout, stderr, err := pod.ExecCommand(clients, firstPod, "ip", "link", "show", "net1")
+				Expect(err).ToNot(HaveOccurred(), "Failed to show net1", stderr)
+				Expect(stdout).To(ContainSubstring("mtu 9000"))
+				firstPodIPs, err := network.GetSriovNicIPs(firstPod, "net1")
+				Expect(err).ToNot(HaveOccurred())
+				Expect(len(firstPodIPs)).To(Equal(1))
+
+				podDefinition = pod.DefineWithNetworks([]string{mtuNetwork.Name})
+				secondPod, err := clients.Pods(namespaces.Test).Create(podDefinition)
+				Expect(err).ToNot(HaveOccurred())
+
+				Eventually(func() corev1.PodPhase {
+					secondPod, _ = clients.Pods(namespaces.Test).Get(secondPod.Name, metav1.GetOptions{})
+					return secondPod.Status.Phase
+				}, 3*time.Minute, time.Second).Should(Equal(corev1.PodRunning))
+
+				stdout, stderr, err = pod.ExecCommand(clients, secondPod,
+					"ping", firstPodIPs[0], "-s", "8972", "-M", "do", "-c", "2")
+				Expect(err).ToNot(HaveOccurred(), "Failed to ping first pod", stderr)
+				Expect(stdout).To(ContainSubstring("2 packets transmitted, 2 received, 0% packet loss"))
+			})
+		})
+
 	})
 })
 

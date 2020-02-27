@@ -13,7 +13,6 @@ import (
 	sriovv1 "github.com/openshift/sriov-network-operator/pkg/apis/sriovnetwork/v1"
 	testclient "github.com/openshift/sriov-tests/pkg/util/client"
 	"github.com/openshift/sriov-tests/pkg/util/namespaces"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -48,12 +47,7 @@ var _ = BeforeSuite(func() {
 	})
 
 	// create test namespace
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: namespaces.Test,
-		},
-	}
-	_, err := clients.Namespaces().Create(ns)
+	err := namespaces.Create(namespaces.Test, clients)
 	Expect(err).ToNot(HaveOccurred())
 })
 

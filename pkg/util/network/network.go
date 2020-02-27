@@ -54,7 +54,9 @@ func CreateSriovPolicy(clientSet *testclient.ClientSet, generatedName string, op
 	return err
 }
 
-func GetSriovNicIps(pod *k8sv1.Pod, ifcName string) ([]string, error) {
+// GetSriovNicIPs returns the list of ip addresses related to the given
+// interface name for the given pod.
+func GetSriovNicIPs(pod *k8sv1.Pod, ifcName string) ([]string, error) {
 	var nets []Network
 	err := json.Unmarshal([]byte(pod.ObjectMeta.Annotations["k8s.v1.cni.cncf.io/networks-status"]), &nets)
 	if err != nil {

@@ -63,7 +63,7 @@ var _ = Describe("ipv6", func() {
 
 				pod := createTestPod([]string{"/bin/bash", "-c", "--"},
 					[]string{"while true; do sleep 300000; done;"}, testNode, ipv6NetworkName)
-				ips, err := network.GetSriovNicIps(pod, sriovInterfaceName)
+				ips, err := network.GetSriovNicIPs(pod, sriovInterfaceName)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(ips).NotTo(BeNil(), "No sriov network interface found.")
 				Expect(len(ips)).Should(Equal(1))
