@@ -143,6 +143,12 @@ var _ = Describe("operator", func() {
 						"VfGroups": ContainElement(sriovv1.VfGroup{ResourceName: "testresource", DeviceType: "netdevice", VfRange: "2-4"}),
 					})))
 
+				Eventually(func() bool {
+					res, err := cluster.SriovStable(operatorNamespace, clients)
+					Expect(err).ToNot(HaveOccurred())
+					return res
+				}, 10*time.Minute, 1*time.Second).Should(BeTrue())
+
 				Eventually(func() int64 {
 					testedNode, err := clients.Nodes().Get(node, metav1.GetOptions{})
 					Expect(err).ToNot(HaveOccurred())
@@ -192,6 +198,12 @@ var _ = Describe("operator", func() {
 					},
 				)))
 
+				Eventually(func() bool {
+					res, err := cluster.SriovStable(operatorNamespace, clients)
+					Expect(err).ToNot(HaveOccurred())
+					return res
+				}, 10*time.Minute, 1*time.Second).Should(BeTrue())
+
 				Eventually(func() map[string]int64 {
 					testedNode, err := clients.Nodes().Get(node, metav1.GetOptions{})
 					Expect(err).ToNot(HaveOccurred())
@@ -203,7 +215,7 @@ var _ = Describe("operator", func() {
 					capacity, _ = resNum.AsInt64()
 					res["openshift.io/testresource1"] = capacity
 					return res
-				}, time.Minute, time.Second).Should(Equal(map[string]int64{
+				}, 2*time.Minute, time.Second).Should(Equal(map[string]int64{
 					"openshift.io/testresource":  int64(3),
 					"openshift.io/testresource1": int64(2),
 				}))
@@ -703,8 +715,6 @@ var _ = Describe("operator", func() {
 			})
 		})
 		Context("MTU", func() {
-			var mtuNetwork *sriovv1.SriovNetwork
-
 			BeforeEach(func() {
 				node := sriovInfos.Nodes[0]
 				intf, err := sriovInfos.FindOneSriovDevice(node)
@@ -757,14 +767,14 @@ var _ = Describe("operator", func() {
 
 				Eventually(func() error {
 					netAttDef := &netattdefv1.NetworkAttachmentDefinition{}
-					return clients.Get(context.Background(), runtimeclient.ObjectKey{Name: mtuNetwork.Name, Namespace: namespaces.Test}, netAttDef)
+					return clients.Get(context.Background(), runtimeclient.ObjectKey{Name: "mtuvolnetwork", Namespace: namespaces.Test}, netAttDef)
 				}, 10*time.Second, 1*time.Second).ShouldNot(HaveOccurred())
 
 			})
 
 			// 27662
 			It("Should support jumbo frames", func() {
-				podDefinition := pod.DefineWithNetworks([]string{mtuNetwork.Name})
+				podDefinition := pod.DefineWithNetworks([]string{"mtuvolnetwork"})
 				firstPod, err := clients.Pods(namespaces.Test).Create(podDefinition)
 				Expect(err).ToNot(HaveOccurred())
 
@@ -780,7 +790,7 @@ var _ = Describe("operator", func() {
 				Expect(err).ToNot(HaveOccurred())
 				Expect(len(firstPodIPs)).To(Equal(1))
 
-				podDefinition = pod.DefineWithNetworks([]string{mtuNetwork.Name})
+				podDefinition = pod.DefineWithNetworks([]string{"mtuvolnetwork"})
 				secondPod, err := clients.Pods(namespaces.Test).Create(podDefinition)
 				Expect(err).ToNot(HaveOccurred())
 
