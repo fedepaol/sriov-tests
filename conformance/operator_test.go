@@ -1,8 +1,10 @@
 package conformance
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -145,7 +147,7 @@ var _ = Describe("operator", func() {
 						"VfGroups": ContainElement(sriovv1.VfGroup{ResourceName: "testresource", DeviceType: "netdevice", VfRange: "2-4"}),
 					})))
 
-				waitForSriovToStable()
+				waitForSRIOVStable()
 
 				Eventually(func() int64 {
 					testedNode, err := clients.Nodes().Get(node, metav1.GetOptions{})
@@ -289,18 +291,13 @@ var _ = Describe("operator", func() {
 		})
 
 		Context("VF flags", func() {
-			debugPod := &corev1.Pod{}
+			hostNetPod := &corev1.Pod{} // Initialized in BeforeEach
 			intf := &sriovv1.InterfaceExt{}
 			numVfs := 5
 
 			validationFunction := func(networks []string, containsFunc func(line string) bool) {
-				// Validate all the virtual functions are in the host namespace
-				_, err := findPodVFInHost(intf.Name, numVfs, debugPod)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(Equal("failed to find the vf number that was moved into the pod"))
-
 				podObj := pod.DefineWithNetworks(networks)
-				err = clients.Create(context.Background(), podObj)
+				err := clients.Create(context.Background(), podObj)
 				Expect(err).ToNot(HaveOccurred())
 				Eventually(func() corev1.PodPhase {
 					podObj, err = clients.Pods(namespaces.Test).Get(podObj.Name, metav1.GetOptions{})
@@ -308,19 +305,16 @@ var _ = Describe("operator", func() {
 					return podObj.Status.Phase
 				}, 3*time.Minute, time.Second).Should(Equal(corev1.PodRunning))
 
+				vfIndex, err := podVFIndexInHost(hostNetPod, podObj, "net1")
 				Expect(err).ToNot(HaveOccurred())
-				stdout, stderr, err := pod.ExecCommand(clients, podObj, "ip", "addr", "show", "dev", "net1")
-				Expect(err).ToNot(HaveOccurred())
-				Expect(stderr).To(Equal(""))
-				vfID, err := findPodVFInHost(intf.Name, numVfs, debugPod)
-				Expect(err).ToNot(HaveOccurred())
-				stdout, stderr, err = pod.ExecCommand(clients, debugPod, "ip", "link", "show")
+
+				stdout, stderr, err := pod.ExecCommand(clients, hostNetPod, "ip", "link", "show")
 				Expect(err).ToNot(HaveOccurred())
 				Expect(stderr).To(Equal(""))
 
 				found := false
 				for _, line := range strings.Split(stdout, "\n") {
-					if strings.Contains(line, fmt.Sprintf("vf %d ", vfID)) && containsFunc(line) {
+					if strings.Contains(line, fmt.Sprintf("vf %d ", vfIndex)) && containsFunc(line) {
 						found = true
 						break
 					}
@@ -397,15 +391,15 @@ var _ = Describe("operator", func() {
 						"NumVfs": Equal(numVfs),
 					})))
 
-				waitForSriovToStable()
+				waitForSRIOVStable()
 
-				debugPod = pod.DefineWithHostNetwork(node)
-				err = clients.Create(context.Background(), debugPod)
+				hostNetPod = pod.DefineWithHostNetwork(node)
+				err = clients.Create(context.Background(), hostNetPod)
 				Expect(err).ToNot(HaveOccurred())
 				Eventually(func() corev1.PodPhase {
-					debugPod, err = clients.Pods(namespaces.Test).Get(debugPod.Name, metav1.GetOptions{})
+					hostNetPod, err = clients.Pods(namespaces.Test).Get(hostNetPod.Name, metav1.GetOptions{})
 					Expect(err).ToNot(HaveOccurred())
-					return debugPod.Status.Phase
+					return hostNetPod.Status.Phase
 				}, 3*time.Minute, time.Second).Should(Equal(corev1.PodRunning))
 			})
 
@@ -648,7 +642,7 @@ var _ = Describe("operator", func() {
 				err = clients.Create(context.Background(), nodePolicy)
 				Expect(err).ToNot(HaveOccurred())
 
-				waitForSriovToStable()
+				waitForSRIOVStable()
 
 				Eventually(func() int64 {
 					testedNode, err := clients.Nodes().Get(node, metav1.GetOptions{})
@@ -789,7 +783,7 @@ var _ = Describe("operator", func() {
 				err = clients.Create(context.Background(), mtuPolicy)
 				Expect(err).ToNot(HaveOccurred())
 
-				waitForSriovToStable()
+				waitForSRIOVStable()
 
 				err = network.CreateSriovNetwork(clients,
 					"mtuvolnetwork",
@@ -844,30 +838,58 @@ var _ = Describe("operator", func() {
 	})
 })
 
-// findPodVFInHost goes over the virtual functions related to the physical function that was provided on the host
-// and return the virtual function id if founds or error if not.
-// return error also if more than one virtual functions is missing in the host network namespace
-func findPodVFInHost(pfName string, numVfs int, podObj *corev1.Pod) (int, error) {
-	found := false
-	vfID := 0
-	for idx := 0; idx < numVfs; idx++ {
-		stdout, _, err := pod.ExecCommand(clients, podObj, "ip", "link", "show", fmt.Sprintf("%sv%d", pfName, idx))
-		if err != nil && strings.Contains(stdout, "does not exist") {
-			// Validate that only one virtual function was moved
-			if found {
-				return vfID, fmt.Errorf("found more that one virtual function was moved from the host network namespace")
-			}
+// podVFIndexInHost retrieves the vf index on the host network namespace related to the given
+// interface that was passed to the pod, using the name in the pod's namespace.
+func podVFIndexInHost(hostNetPod *corev1.Pod, targetPod *corev1.Pod, interfaceName string) (int, error) {
+	stdout, stderr, err := pod.ExecCommand(clients, targetPod, "readlink", "-f", fmt.Sprintf("/sys/class/net/%s", interfaceName))
+	if err != nil {
+		return 0, fmt.Errorf("Failed to find %s interface address %v - %s", interfaceName, err, stderr)
+	}
+	// sysfs address looks like: /sys/devices/pci0000:17/0000:17:02.0/0000:19:00.5/net/net1
+	pathSegments := strings.Split(stdout, "/")
+	if len(pathSegments) != 8 {
+		return 0, fmt.Errorf("Expecting 7 segments of %s, found %d", stdout, len(pathSegments))
+	}
 
-			found = true
-			vfID = idx
+	podVFAddr := pathSegments[5] // 0000:19:00.5
+
+	devicePath := strings.Join(pathSegments[0:len(pathSegments)-2], "/") // /sys/devices/pci0000:17/0000:17:02.0/0000:19:00.5/
+	findAllSiblingVfs := strings.Split(fmt.Sprintf("ls -gG %s/physfn/", devicePath), " ")
+
+	stdout, stderr, err = pod.ExecCommand(clients, hostNetPod, findAllSiblingVfs...)
+	if err != nil {
+		return 0, fmt.Errorf("Failed to find %s siblings %v - %s", devicePath, err, stderr)
+	}
+
+	// lines of the format of
+	// lrwxrwxrwx. 1        0 Mar  6 15:15 virtfn3 -> ../0000:19:00.5
+
+	scanner := bufio.NewScanner(strings.NewReader(stdout))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.Contains(line, "virtfn") {
+			continue
+		}
+
+		columns := strings.Fields(line)
+
+		if len(columns) != 9 {
+			return 0, fmt.Errorf("Expecting 9 columns in %s, found %d", line, len(columns))
+		}
+
+		vfAddr := strings.TrimPrefix(columns[8], "../") // ../0000:19:00.2
+
+		if vfAddr == podVFAddr { // Found!
+			vfName := columns[6] // virtfn0
+			vfNumber := strings.TrimPrefix(vfName, "virtfn")
+			res, err := strconv.Atoi(vfNumber)
+			if err != nil {
+				return 0, fmt.Errorf("Could not get vf number from vfname %s", vfName)
+			}
+			return res, nil
 		}
 	}
-
-	if found {
-		return vfID, nil
-	}
-
-	return vfID, fmt.Errorf("failed to find the vf number that was moved into the pod")
+	return 0, fmt.Errorf("Could not find %s index in %s", podVFAddr, stdout)
 }
 
 func daemonsScheduledOnNodes(selector string) bool {
@@ -900,7 +922,7 @@ func daemonsScheduledOnNodes(selector string) bool {
 func createSriovPolicy(sriovDevice string, testNode string, numVfs int, resourceName string) {
 	err := network.CreateSriovPolicy(clients, "test-policy-", operatorNamespace, sriovDevice, testNode, numVfs, resourceName)
 	Expect(err).ToNot(HaveOccurred())
-	waitForSriovToStable()
+	waitForSRIOVStable()
 
 	Eventually(func() int64 {
 		testedNode, err := clients.Nodes().Get(testNode, metav1.GetOptions{})
@@ -949,7 +971,7 @@ func pingPod(ip string, nodeSelector string, sriovNetworkAttachment string) {
 	}, 3*time.Minute, 1*time.Second).Should(Equal(k8sv1.PodSucceeded))
 }
 
-func waitForSriovToStable() {
+func waitForSRIOVStable() {
 	Eventually(func() bool {
 		res, err := cluster.SriovStable(operatorNamespace, clients)
 		Expect(err).ToNot(HaveOccurred())

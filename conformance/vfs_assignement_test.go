@@ -63,7 +63,7 @@ var _ = Describe("pod", func() {
 					"VfGroups": ContainElement(sriovv1.VfGroup{ResourceName: resourceName, DeviceType: "netdevice", VfRange: "0-4"}),
 				})), "Error SriovNetworkNodeState doesn't contain required elements")
 
-			waitForSriovToStable()
+			waitForSRIOVStable()
 
 			Eventually(func() int64 {
 				testedNode, err := clients.Nodes().Get(testNode, metav1.GetOptions{})
