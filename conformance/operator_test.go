@@ -115,6 +115,9 @@ var _ = Describe("operator", func() {
 		Context("PF Partitioning", func() {
 			// 27633
 			It("Should be possible to partition the pf's vfs", func() {
+				// TODO Remove the skip
+				Skip("Temporarly skipped as we want to make sure this is the cause of failures in CI")
+
 				node := sriovInfos.Nodes[0]
 				intf, err := sriovInfos.FindOneSriovDevice(node)
 				Expect(err).ToNot(HaveOccurred())
@@ -855,13 +858,15 @@ func podVFIndexInHost(hostNetPod *corev1.Pod, targetPod *corev1.Pod, interfaceNa
 	}
 	// sysfs address looks like: /sys/devices/pci0000:17/0000:17:02.0/0000:19:00.5/net/net1
 	pathSegments := strings.Split(stdout, "/")
-	if len(pathSegments) != 8 {
-		return 0, fmt.Errorf("Expecting 7 segments of %s, found %d", stdout, len(pathSegments))
+	segNum := len(pathSegments)
+
+	if !strings.HasPrefix(pathSegments[segNum-1], "net1") { // not checking equality because of rubbish like new line
+		return 0, fmt.Errorf("Expecting net1 as last segment of %s", stdout)
 	}
 
-	podVFAddr := pathSegments[5] // 0000:19:00.5
+	podVFAddr := pathSegments[segNum-3] // 0000:19:00.5
 
-	devicePath := strings.Join(pathSegments[0:len(pathSegments)-2], "/") // /sys/devices/pci0000:17/0000:17:02.0/0000:19:00.5/
+	devicePath := strings.Join(pathSegments[0:segNum-2], "/") // /sys/devices/pci0000:17/0000:17:02.0/0000:19:00.5/
 	findAllSiblingVfs := strings.Split(fmt.Sprintf("ls -gG %s/physfn/", devicePath), " ")
 
 	stdout, stderr, err = pod.ExecCommand(clients, hostNetPod, findAllSiblingVfs...)
