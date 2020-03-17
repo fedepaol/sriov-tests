@@ -866,7 +866,7 @@ var _ = Describe("operator", func() {
 
 				createSriovPolicy(sriovDevice.Name, testNode, 5, resourceName)
 				ipam := `{"type": "host-local","ranges": [[{"subnet": "3ffe:ffff:0:01ff::/64"}]],"dataDir": "/run/my-orchestrator/container-ipam-state"}`
-				err = network.CreateSriovNetwork(clients, sriovNetworkName, namespaces.Test, operatorNamespace, resourceName, ipam)
+				err = network.CreateSriovNetwork(clients, sriovDevice, sriovNetworkName, namespaces.Test, operatorNamespace, resourceName, ipam)
 				Expect(err).ToNot(HaveOccurred())
 				Eventually(func() error {
 					netAttDef := &netattdefv1.NetworkAttachmentDefinition{}
