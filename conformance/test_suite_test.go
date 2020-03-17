@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -45,7 +46,20 @@ func TestTest(t *testing.T) {
 	if junitPath != nil {
 		rr = append(rr, reporters.NewJUnitReporter(*junitPath))
 	}
-	if *dumpOutput {
+
+	reporterFile := os.Getenv("REPORTER_OUTPUT")
+
+	if reporterFile != "" {
+		f, err := os.OpenFile(reporterFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to open the file: %v\n", err)
+			return
+		}
+		defer f.Close()
+
+		rr = append(rr, k8sreporter.New(clients, f))
+
+	} else if *dumpOutput {
 		rr = append(rr, k8sreporter.New(clients, os.Stdout))
 	}
 
