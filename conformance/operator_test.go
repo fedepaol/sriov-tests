@@ -21,6 +21,8 @@ import (
 	"github.com/openshift/sriov-tests/pkg/util/pod"
 	corev1 "k8s.io/api/core/v1"
 	k8sv1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/pointer"
 	runtimeclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -39,19 +41,7 @@ var _ = Describe("operator", func() {
 	BeforeEach(func() {
 		err := namespaces.Clean(operatorNamespace, namespaces.Test, clients)
 		Expect(err).ToNot(HaveOccurred())
-
-		Eventually(func() bool {
-			isClusterReady, err := cluster.IsClusterStable(clients)
-			Expect(err).ToNot(HaveOccurred())
-			if !isClusterReady {
-				return isClusterReady
-			}
-
-			res, err := cluster.SriovStable(operatorNamespace, clients)
-			Expect(err).ToNot(HaveOccurred())
-
-			return res
-		}, 10*time.Minute, 5*time.Second).Should(BeTrue())
+		waitForSRIOVStable()
 	})
 
 	var _ = Describe("Configuration", func() {
@@ -115,9 +105,6 @@ var _ = Describe("operator", func() {
 		Context("PF Partitioning", func() {
 			// 27633
 			It("Should be possible to partition the pf's vfs", func() {
-				// TODO Remove the skip
-				Skip("Temporarly skipped as we want to make sure this is the cause of failures in CI")
-
 				node := sriovInfos.Nodes[0]
 				intf, err := sriovInfos.FindOneSriovDevice(node)
 				Expect(err).ToNot(HaveOccurred())
@@ -442,6 +429,13 @@ var _ = Describe("operator", func() {
 				err = clients.Delete(context.Background(), sriovNetwork)
 				Expect(err).ToNot(HaveOccurred())
 
+				Eventually(func() bool {
+					networkDef := &sriovv1.SriovNetwork{}
+					err := clients.Get(context.Background(), runtimeclient.ObjectKey{Name: "spoofnetwork",
+						Namespace: operatorNamespace}, networkDef)
+					return k8serrors.IsNotFound(err)
+				}, 10*time.Second, 1*time.Second).Should(BeTrue())
+
 				By("configuring spoofChk off")
 				copyObj = sriovNetwork.DeepCopy()
 				copyObj.Spec.SpoofChk = "off"
@@ -479,6 +473,12 @@ var _ = Describe("operator", func() {
 				By("removing sriov network")
 				err = clients.Delete(context.Background(), sriovNetwork)
 				Expect(err).ToNot(HaveOccurred())
+				Eventually(func() bool {
+					networkDef := &sriovv1.SriovNetwork{}
+					err := clients.Get(context.Background(), runtimeclient.ObjectKey{Name: "trustnetwork",
+						Namespace: operatorNamespace}, networkDef)
+					return k8serrors.IsNotFound(err)
+				}, 10*time.Second, 1*time.Second).Should(BeTrue())
 
 				By("configuring trust off")
 				copyObj = sriovNetwork.DeepCopy()
@@ -517,6 +517,12 @@ var _ = Describe("operator", func() {
 				By("removing sriov network")
 				err = clients.Delete(context.Background(), enabledLinkNetwork)
 				Expect(err).ToNot(HaveOccurred())
+				Eventually(func() bool {
+					networkDef := &sriovv1.SriovNetwork{}
+					err := clients.Get(context.Background(), runtimeclient.ObjectKey{Name: "statenetwork",
+						Namespace: operatorNamespace}, networkDef)
+					return k8serrors.IsNotFound(err)
+				}, 10*time.Second, 1*time.Second).Should(BeTrue())
 
 				By("configuring link-state as disable")
 				disabledLinkNetwork := sriovNetwork.DeepCopy()
@@ -530,6 +536,12 @@ var _ = Describe("operator", func() {
 				By("removing sriov network")
 				err = clients.Delete(context.Background(), disabledLinkNetwork)
 				Expect(err).ToNot(HaveOccurred())
+				Eventually(func() bool {
+					networkDef := &sriovv1.SriovNetwork{}
+					err := clients.Get(context.Background(), runtimeclient.ObjectKey{Name: "statenetwork",
+						Namespace: operatorNamespace}, networkDef)
+					return k8serrors.IsNotFound(err)
+				}, 10*time.Second, 1*time.Second).Should(BeTrue())
 
 				By("configuring link-state as auto")
 				autoLinkNetwork := sriovNetwork.DeepCopy()
@@ -795,13 +807,24 @@ var _ = Describe("operator", func() {
 
 				waitForSRIOVStable()
 
-				err = network.CreateSriovNetwork(clients,
-					intf,
-					"mtuvolnetwork",
-					namespaces.Test,
-					operatorNamespace,
-					"mturesource",
-					`{"type":"host-local","subnet":"10.10.10.0/24","rangeStart":"10.10.10.171","rangeEnd":"10.10.10.181","routes":[{"dst":"0.0.0.0/0"}],"gateway":"10.10.10.1"}`)
+				sriovNetwork := &sriovv1.SriovNetwork{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "mtuvolnetwork",
+						Namespace: operatorNamespace,
+					},
+					Spec: sriovv1.SriovNetworkSpec{
+						ResourceName:     "mturesource",
+						IPAM:             `{"type":"host-local","subnet":"10.10.10.0/24","rangeStart":"10.10.10.171","rangeEnd":"10.10.10.181","routes":[{"dst":"0.0.0.0/0"}],"gateway":"10.10.10.1"}`,
+						NetworkNamespace: namespaces.Test,
+						LinkState:        "enable",
+					}}
+
+				// We need this to be able to run the connectivity checks on Mellanox cards
+				if intf.DeviceID == "1015" {
+					sriovNetwork.Spec.SpoofChk = "off"
+				}
+
+				err = clients.Create(context.Background(), sriovNetwork)
 
 				Expect(err).ToNot(HaveOccurred())
 
@@ -1125,15 +1148,21 @@ func pingPod(ip string, nodeSelector string, sriovNetworkAttachment string) {
 }
 
 func waitForSRIOVStable() {
+	// This used to be to check for sriov not to be stable first,
+	// then stable. The issue is that if no configuration is applied, then
+	// the status won't never go to not stable and the test will fail.
+	// TODO: find a better way to handle this scenario
+
+	time.Sleep(5 * time.Second)
 	Eventually(func() bool {
 		res, err := cluster.SriovStable(operatorNamespace, clients)
 		Expect(err).ToNot(HaveOccurred())
 		return res
-	}, 2*time.Minute, 5*time.Second).Should(BeFalse())
+	}, 10*time.Minute, 1*time.Second).Should(BeTrue())
 
 	Eventually(func() bool {
-		res, err := cluster.SriovStable(operatorNamespace, clients)
+		isClusterReady, err := cluster.IsClusterStable(clients)
 		Expect(err).ToNot(HaveOccurred())
-		return res
+		return isClusterReady
 	}, 10*time.Minute, 1*time.Second).Should(BeTrue())
 }

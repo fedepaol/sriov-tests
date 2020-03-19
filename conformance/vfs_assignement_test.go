@@ -30,18 +30,8 @@ var _ = Describe("pod", func() {
 		Expect(err).ToNot(HaveOccurred())
 		err = namespaces.Clean(operatorNamespace, namespaces.Test, clients)
 		Expect(err).ToNot(HaveOccurred())
-		Eventually(func() bool {
-			isClusterReady, err := cluster.IsClusterStable(clients)
-			Expect(err).ToNot(HaveOccurred())
-			if !isClusterReady {
-				return isClusterReady
-			}
 
-			res, err := cluster.SriovStable(operatorNamespace, clients)
-			Expect(err).ToNot(HaveOccurred())
-
-			return res
-		}, 10*time.Minute, 5*time.Second).Should(BeTrue())
+		waitForSRIOVStable()
 	})
 
 	var _ = Describe("Configuration", func() {
