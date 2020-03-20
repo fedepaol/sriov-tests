@@ -1116,6 +1116,8 @@ func createCustomTestPod(node string, networks []string, hostNetwork bool) *k8sv
 		)
 	}
 	createdPod, err := clients.Pods(namespaces.Test).Create(podDefinition)
+	Expect(err).ToNot(HaveOccurred())
+
 	Eventually(func() k8sv1.PodPhase {
 		runningPod, err := clients.Pods(namespaces.Test).Get(createdPod.Name, metav1.GetOptions{})
 		Expect(err).ToNot(HaveOccurred())
