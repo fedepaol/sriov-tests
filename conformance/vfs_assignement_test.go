@@ -26,6 +26,7 @@ var _ = Describe("pod", func() {
 	var sriovInfos *cluster.EnabledNodes
 	execute.BeforeAll(func() {
 		var err error
+		waitForSRIOVStable()
 		sriovInfos, err = cluster.DiscoverSriov(clients, operatorNamespace)
 		Expect(err).ToNot(HaveOccurred())
 		err = namespaces.Clean(operatorNamespace, namespaces.Test, clients)
